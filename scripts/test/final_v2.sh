@@ -102,48 +102,81 @@ kill_process() {
 
 # Function to monitor network bandwidth
 monitor_network() {
-    whiptail --title "🌐 Network Bandwidth Monitoring" --msgbox "Starting network monitor for 10 seconds..." 8 50
-    timeout 10 ifstat -i eth0 -b -n 1 > /tmp/network_stats.txt
-    whiptail --title "🌐 Network Bandwidth Results" --textbox /tmp/network_stats.txt 20 90
-    rm /tmp/network_stats.txt
+    whiptail --title "🌐 Network Monitor" --msgbox "Monitoring network activity... Press Ctrl+C to exit." 8 60
+    gnome-terminal -- bash -c "iftop -i eth0"
 }
+#Alternative: If iftop is unavailable, install it using sudo apt install iftop.
+
 # Function for auto-healing
-auto_heal() {
-    log_system_data
-    healing_msg="🔍 Running System Health Check...\n"
-
-    # Check CPU
-    CPU_LOAD=$(top -bn1 | grep "Cpu(s)" | awk '{print $2 + $4}')
-    if (( $(echo "$CPU_LOAD > $THRESHOLD_CPU" | bc -l) )); then
-        PID=$(ps -eo pid,%cpu --sort=-%cpu | awk 'NR==2 {print $1}')
-        healing_msg+="⚠ High CPU detected! Killing process $PID...\n"
-        kill -9 "$PID"
-        send_telegram_alert "High CPU usage detected ($CPU_LOAD%). Process $PID was killed."
+# Function to control auto-healing
+toggle_auto_heal() {
+    if [ -f "/tmp/auto_heal_running" ]; then
+        rm /tmp/auto_heal_running
+        whiptail --title "Auto-Healing" --msgbox "❌ Auto-healing disabled!" 10 40
+        send_telegram_alert "❌ Auto-healing disabled!"
+    else
+        touch /tmp/auto_heal_running
+        whiptail --title "Auto-Healing" --msgbox "✅ Auto-healing enabled! Running for 24 hours..." 10 40
+        send_telegram_alert "✅ Auto-healing enabled!"
+        auto_heal_loop &  # Run in the background
     fi
-
-    # Check Memory
-    MEM_PERCENT=$(free | awk 'NR==2{print $3/$2 * 100.0}')
-    if (( $(echo "$MEM_PERCENT > 80" | bc -l) )); then
-        PID=$(ps -eo pid,%mem --sort=-%mem | awk 'NR==2 {print $1}')
-        healing_msg+=" ⚠ High Memory detected! Killing process $PID...\n"
-        kill -9 "$PID"
-        send_telegram_alert "High memory usage detected ($MEM_PERCENT%). Process $PID was killed."
-    fi
-
-    # Check Disk
-    DISK_USAGE=$(df / | awk 'NR==2 {print $5}' | tr -d '%')
-    if [ "$DISK_USAGE" -gt 80 ]; then
-        healing_msg+=" ⚠ High Disk usage detected! ($DISK_USAGE%)\n"
-        send_telegram_alert "High disk usage detected ($DISK_USAGE%)"
-    fi
-
-    healing_msg+=" ✅ Health check completed!"
-    whiptail --title "Auto-Healing Results" --msgbox "$healing_msg" 20 60
 }
+
+# Function to continuously run auto-healing
+auto_heal_loop() {
+    local start_time=$(date +%s)
+    local duration=$((24 * 60 * 60))  # 24 hours
+
+    while [ -f "/tmp/auto_heal_running" ]; do
+        current_time=$(date +%s)
+        elapsed=$((current_time - start_time))
+        
+        if [ "$elapsed" -ge "$duration" ]; then
+            rm "/tmp/auto_heal_running"
+            send_telegram_alert "⏳ Auto-healing stopped after 24 hours."
+            break
+        fi
+
+        log_system_data
+        healing_msg="🔍 Running System Health Check...\n"
+
+        # Check CPU
+        CPU_LOAD=$(top -bn1 | grep "Cpu(s)" | awk '{print $2 + $4}')
+        if (( $(echo "$CPU_LOAD > $THRESHOLD_CPU" | bc -l) )); then
+            PID=$(ps -eo pid,%cpu --sort=-%cpu | awk 'NR==2 {print $1}')
+            healing_msg+="⚠ High CPU detected! Killing process $PID...\n"
+            kill -9 "$PID"
+            send_telegram_alert "High CPU usage detected ($CPU_LOAD%). Process $PID was killed."
+        fi
+
+        # Check Memory
+        MEM_PERCENT=$(free | awk 'NR==2{print $3/$2 * 100.0}')
+        if (( $(echo "$MEM_PERCENT > 80" | bc -l) )); then
+            PID=$(ps -eo pid,%mem --sort=-%mem | awk 'NR==2 {print $1}')
+            healing_msg+="⚠ High Memory detected! Killing process $PID...\n"
+            kill -9 "$PID"
+            send_telegram_alert "High memory usage detected ($MEM_PERCENT%). Process $PID was killed."
+        fi
+
+        # Check Disk
+        DISK_USAGE=$(df / | awk 'NR==2 {print $5}' | tr -d '%')
+        if [ "$DISK_USAGE" -gt 80 ]; then
+            healing_msg+="⚠ High Disk usage detected! ($DISK_USAGE%)\n"
+            send_telegram_alert "High disk usage detected ($DISK_USAGE%)"
+        fi
+
+        healing_msg+="✅ Health check completed!"
+        whiptail --title "Auto-Healing Results" --msgbox "$healing_msg" 15 60
+
+        sleep 5  # Check every 5 seconds
+    done
+}
+
 
 # Function to show logs with working OK button
 show_logs() {
     # Create a temporary file with the log content
+    gnome-terminal -- bash -c "tail -f $LOG_FILE"
     log_content=$(cat "$LOG_FILE")
     echo "$log_content" > /tmp/log_temp.txt
     whiptail --title "📜 System Monitor Logs" --textbox /tmp/log_temp.txt 25 90
